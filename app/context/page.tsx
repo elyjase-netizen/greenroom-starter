@@ -75,16 +75,16 @@ export default function ContextPage() {
           trusts.
         </Step>
         <Step n={3}>
-          Click the green <strong>Settle show</strong> button. For most deal
-          types — Vs deals, % of net, door deals — the tool will tell you it
-          isn&apos;t supported. That empty state is the seam this case study
-          is about.
+          Click the green <strong>Settle show</strong> button. For many deal
+          types — non-standard Vs (walkout, ratchet, % of gross), % of net, door
+          deals — the tool will tell you it isn&apos;t supported. That empty
+          state is still the seam this case study is about.
         </Step>
         <Step n={4}>
-          Try Settle on a show with a <strong>Flat</strong> badge. The tool
-          actually works for those. Flat guarantees are the most common deal
-          type at The Crescent (about 33% of bookings), and one of only two
-          kinds the tool can settle end-to-end.
+          Try Settle on a show with a <strong>Flat</strong> badge or a{" "}
+          <strong>standard Vs</strong> deal (net basis, no walkout/ratchet in
+          structured bonuses). The tool settles those end-to-end from captured
+          fields.
         </Step>
         <Step n={5}>
           Open{" "}

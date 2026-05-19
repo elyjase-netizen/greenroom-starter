@@ -27,17 +27,14 @@ import {
   formatMoney,
   formatShowDateFull,
 } from "@/lib/format";
-import type { Settlement, Recoup } from "@/db/schema";
+import type { Settlement } from "@/db/schema";
 import { Logomark } from "@/components/brand/logo";
-
-const RECOUP_LABELS: Record<Recoup["category"], string> = {
-  marketing: "Marketing",
-  hospitality_overage: "Hospitality overage",
-  production_overage: "Production overage",
-  prior_advance: "Prior advance",
-  damages: "Damages",
-  other: "Other",
-};
+import {
+  AGREEMENT_STATUS_LABELS,
+  AGREEMENT_STATUS_VARIANTS,
+  agreementRiskFlags,
+  type DealAgreementBundle,
+} from "@/lib/dealAgreement";
 
 export default async function SettlePage({
   params,
@@ -48,7 +45,7 @@ export default async function SettlePage({
   const data = await getShowById(id);
   if (!data) notFound();
 
-  const { show, artist, deal, ticketSales, expenses, settlement, recoups } =
+  const { show, artist, deal, ticketSales, expenses, settlement, recoups, agreement } =
     data;
 
   if (!deal) {
@@ -67,6 +64,8 @@ export default async function SettlePage({
     ticketSales,
     expenses,
     venueCapacity: data.venue?.capacity ?? undefined,
+    agreement,
+    recoups,
   });
   const grossSoFar = ticketSales.reduce((sum, t) => sum + t.gross, 0);
   const totalFees = ticketSales.reduce((sum, t) => sum + t.fees, 0);
@@ -127,6 +126,12 @@ export default async function SettlePage({
       )}
 
       <div className="space-y-6 mt-6">
+        <AgreementSettlementBanner
+          agreement={agreement}
+          showId={show.id}
+          available={calc.supported}
+        />
+
         {!calc.supported ? (
           <UnsupportedDeal
             dealType={calc.dealType}
@@ -141,8 +146,6 @@ export default async function SettlePage({
         ) : (
           <SupportedSettlement calc={calc} existingSettlement={settlement} />
         )}
-
-        {recoups.length > 0 && <RecoupsSection recoups={recoups} />}
 
         {settlement && (settlement.signoffText || settlement.notes) && (
           <SignoffSection settlement={settlement} />
@@ -173,6 +176,89 @@ export default async function SettlePage({
         </div>
       </div>
     </div>
+  );
+}
+
+function AgreementSettlementBanner({
+  agreement,
+  showId,
+  available,
+}: {
+  agreement: DealAgreementBundle | null;
+  showId: string;
+  available: boolean;
+}) {
+  const flags = agreementRiskFlags(agreement);
+
+  if (!available) {
+    return (
+      <Card accent="amber">
+        <CardContent className="py-4">
+          <div className="text-[13px] font-semibold text-ink-900">
+            Deal agreement unavailable
+          </div>
+          <div className="text-[12px] text-ink-500 mt-0.5 leading-relaxed">
+            Deal agreements and in-app settlement for deals with walk-out pots,
+            tier ratchets, and vs-% of gross are coming soon!
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (!agreement) {
+    return (
+      <Card accent="amber">
+        <CardContent className="py-4 flex items-center justify-between gap-4">
+          <div>
+            <div className="text-[13px] font-semibold text-ink-900">
+              No structured deal agreement is attached.
+            </div>
+            <div className="text-[12px] text-ink-500 mt-0.5">
+              Settlement is using legacy deal fields and free-text context.
+            </div>
+          </div>
+          <Link href={`/shows/${showId}/deal`} className="text-[12px] font-medium text-brand-700 hover:underline">
+            Review agreement
+          </Link>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const status = agreement.agreement.status;
+  return (
+    <Card accent={flags.length ? "amber" : "brand"}>
+      <CardContent className="py-4">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2">
+              <div className="text-[13px] font-semibold text-ink-900">
+                Using agreed deal version {agreement.agreement.version}
+              </div>
+              <PlainBadge variant={AGREEMENT_STATUS_VARIANTS[status]}>
+                {AGREEMENT_STATUS_LABELS[status]}
+              </PlainBadge>
+            </div>
+            <div className="text-[12px] text-ink-500 mt-1 leading-relaxed">
+              Worksheet is anchored to the structured calculation order:
+              {" "}
+              {agreement.calculationSteps.slice(0, 4).map((s) => s.label).join(" → ")}
+              {agreement.calculationSteps.length > 4 ? " → …" : ""}
+            </div>
+            {flags.length > 0 && (
+              <div className="text-[12px] text-amber-800 mt-2 leading-relaxed">
+                {flags[0]}
+                {flags.length > 1 && ` +${flags.length - 1} more flags`}
+              </div>
+            )}
+          </div>
+          <Link href={`/shows/${showId}/deal`} className="text-[12px] font-medium text-brand-700 hover:underline shrink-0">
+            View agreement
+          </Link>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -383,6 +469,7 @@ function UnsupportedDeal({
     vs: "vs deal",
     door: "door deal",
   };
+  const isUnsupportedVs = dealType === "vs";
 
   return (
     <>
@@ -392,11 +479,14 @@ function UnsupportedDeal({
             <FileWarning className="h-5 w-5 text-amber-700" />
           </div>
           <h2 className="font-display text-[22px] font-medium text-ink-900 mb-2" style={{ letterSpacing: "-0.02em" }}>
-            The in-app tool can&apos;t settle a {friendly[dealType] ?? dealType} yet.
+            {isUnsupportedVs
+              ? "The in-app tool can only settle basic VS deals right now."
+              : `The in-app tool can't settle a ${friendly[dealType] ?? dealType} yet.`}
           </h2>
           <p className="text-[13px] text-ink-500 max-w-md mx-auto leading-relaxed">
-            Mariana would do this on a Google Sheet at 2am tonight. The inputs
-            are below — but the math doesn&apos;t happen here.
+            {isUnsupportedVs
+              ? "More complex settlement features are coming!"
+              : "Mariana would do this on a Google Sheet at 2am tonight. The inputs are below — but the math doesn't happen here."}
           </p>
         </CardContent>
       </Card>
@@ -536,28 +626,17 @@ function SupportedSettlement({
         <CardHeader>
           <div>
             <CardTitle>Settlement worksheet</CardTitle>
-            <CardDescription className="font-mono">
-              {calc.finalFormula}
-            </CardDescription>
           </div>
         </CardHeader>
         <CardContent className="divide-y divide-ink-100/80">
-          <Row
-            label="Gross box office"
-            value={formatMoney(calc.grossBoxOffice)}
-          />
-          <Row label="Net box office" value={formatMoney(calc.netBoxOffice)} />
-          <Row
-            label="Total expenses (passed through)"
-            value={formatMoney(calc.totalExpenses)}
-          />
-          <div className="pt-3" />
           {calc.steps.map((step, i) => (
             <Row
               key={i}
               label={step.label}
               value={formatMoney(step.value)}
               note={step.note}
+              detailLines={step.detailLines}
+              recoupStatus={step.recoupStatus}
             />
           ))}
           <div className="pt-3" />
@@ -604,60 +683,6 @@ function SupportedSettlement({
   );
 }
 
-function RecoupsSection({ recoups }: { recoups: Recoup[] }) {
-  const total = recoups.reduce((s, r) => s + r.amount, 0);
-  const disputedTotal = recoups
-    .filter((r) => r.status === "disputed")
-    .reduce((s, r) => s + r.amount, 0);
-  const hasDisputed = disputedTotal > 0;
-
-  return (
-    <Card accent={hasDisputed ? "rose" : undefined}>
-      <CardHeader>
-        <div>
-          <CardTitle>Recoups</CardTitle>
-          <CardDescription>
-            Venue costs taken off the top before artist payment. Often the
-            disputed line items in a settlement.
-          </CardDescription>
-        </div>
-        <PlainBadge variant={hasDisputed ? "rose" : "default"}>
-          {formatMoney(total)} total
-        </PlainBadge>
-      </CardHeader>
-      <CardContent className="divide-y divide-ink-100/80">
-        {recoups.map((r) => (
-          <div
-            key={r.id}
-            className="py-3.5 grid grid-cols-[1fr_auto_auto] items-center gap-3"
-          >
-            <div className="min-w-0">
-              <div className="text-[13px] text-ink-900 leading-tight">
-                {r.label}
-              </div>
-              <div className="text-[11.5px] text-ink-400 mt-0.5">
-                {RECOUP_LABELS[r.category]}
-              </div>
-            </div>
-            <div>
-              {r.status === "disputed" ? (
-                <PlainBadge variant="rose">Disputed</PlainBadge>
-              ) : r.status === "withdrawn" ? (
-                <PlainBadge variant="default">Withdrawn</PlainBadge>
-              ) : (
-                <PlainBadge variant="brand">Agreed</PlainBadge>
-              )}
-            </div>
-            <div className="text-[13.5px] font-mono tabular text-ink-900 text-right min-w-[80px]">
-              {formatMoney(r.amount)}
-            </div>
-          </div>
-        ))}
-      </CardContent>
-    </Card>
-  );
-}
-
 function SignoffSection({ settlement }: { settlement: Settlement }) {
   return (
     <Card>
@@ -694,22 +719,44 @@ function Row({
   label,
   value,
   note,
+  detailLines,
+  recoupStatus,
 }: {
   label: string;
   value: string;
   note?: string;
+  detailLines?: string[];
+  recoupStatus?: "agreed" | "disputed" | "withdrawn";
 }) {
   return (
-    <div className="flex items-baseline justify-between py-2.5">
-      <div>
-        <div className="text-[13px] text-ink-600">{label}</div>
+    <div className="flex items-start justify-between gap-4 py-2.5">
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="text-[13px] text-ink-600">{label}</div>
+          {recoupStatus === "disputed" ? (
+            <PlainBadge variant="rose">Disputed</PlainBadge>
+          ) : recoupStatus === "withdrawn" ? (
+            <PlainBadge variant="default">Withdrawn</PlainBadge>
+          ) : recoupStatus === "agreed" ? (
+            <PlainBadge variant="brand">Agreed</PlainBadge>
+          ) : null}
+        </div>
+        {detailLines && detailLines.length > 0 && (
+          <ul className="mt-2 ml-3 pl-3 border-l border-ink-100/80 text-[11.5px] text-ink-400 space-y-0.5 leading-snug list-none">
+            {detailLines.map((line, j) => (
+              <li key={j}>{line}</li>
+            ))}
+          </ul>
+        )}
         {note && (
-          <div className="text-[11.5px] text-ink-400 mt-0.5 max-w-md leading-snug">
+          <div
+            className={`text-[11.5px] text-ink-400 max-w-md leading-snug ${detailLines?.length ? "mt-2" : "mt-0.5"}`}
+          >
             {note}
           </div>
         )}
       </div>
-      <div className="text-[13.5px] text-ink-900 font-mono tabular">
+      <div className="text-[13.5px] text-ink-900 font-mono tabular shrink-0 pt-px">
         {value}
       </div>
     </div>

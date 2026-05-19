@@ -9,6 +9,7 @@
     "lint": "eslint",
     "db:push": "drizzle-kit push",
     "db:seed": "tsx db/seed.ts",
+    "verify:settlement": "tsx scripts/verify-settlement.ts",
     "db:reset": "rm -f data/greenroom.db && drizzle-kit push && tsx db/seed.ts",
     "db:studio": "drizzle-kit studio"
   },

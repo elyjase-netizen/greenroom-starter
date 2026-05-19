@@ -6,6 +6,7 @@ import {
   AlertCircle,
   Clock,
   TrendingUp,
+  FileCheck2,
 } from "lucide-react";
 import { getShowById } from "@/lib/queries";
 import {
@@ -18,7 +19,7 @@ import {
 } from "@/components/ui/card";
 import { StatusBadge, DealTypeBadge, PlainBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { parseBonuses } from "@/lib/dealMath";
+import { isDealSupportedForInAppSettlement, parseBonuses } from "@/lib/dealMath";
 import {
   formatMoney,
   formatMoneyCompact,
@@ -26,6 +27,13 @@ import {
   relativeShowDate,
 } from "@/lib/format";
 import type { Bonus } from "@/db/schema";
+import {
+  AGREEMENT_STATUS_LABELS,
+  AGREEMENT_STATUS_VARIANTS,
+  agreementRiskFlags,
+  agreementReadyForSettlement,
+  type DealAgreementBundle,
+} from "@/lib/dealAgreement";
 
 const COMP_LABELS: Record<string, string> = {
   artist_gl: "Artist guest list",
@@ -56,6 +64,7 @@ export default async function ShowDetailPage({
     ticketSales,
     expenses,
     comps,
+    agreement,
   } = data;
 
   const grossSoFar = ticketSales.reduce((sum, t) => sum + t.gross, 0);
@@ -74,6 +83,9 @@ export default async function ShowDetailPage({
     .reduce((s, c) => s + c.count, 0);
 
   const bonuses = deal ? parseBonuses(deal) : [];
+  const dealAgreementAvailable = deal
+    ? isDealSupportedForInAppSettlement(deal)
+    : false;
 
   const isDisputed = settlement?.status === "disputed";
 
@@ -296,6 +308,12 @@ export default async function ShowDetailPage({
             </CardContent>
           </Card>
 
+          <DealAgreementCard
+            showId={show.id}
+            agreement={agreement}
+            available={dealAgreementAvailable}
+          />
+
           {/* Box office */}
           <Card>
             <CardHeader>
@@ -455,6 +473,146 @@ export default async function ShowDetailPage({
         </div>
       </div>
     </div>
+  );
+}
+
+function DealAgreementCard({
+  showId,
+  agreement,
+  available,
+}: {
+  showId: string;
+  agreement: DealAgreementBundle | null;
+  available: boolean;
+}) {
+  const flags = agreementRiskFlags(agreement);
+  const ready = agreementReadyForSettlement(agreement);
+  const status = agreement?.agreement.status;
+  const keyExpenseTerms = agreement?.expenseTerms.filter(
+    (term) => term.treatment !== "excluded",
+  );
+
+  return (
+    <Card
+      className="md:col-span-3"
+      accent={ready ? "brand" : flags.length > 0 ? "amber" : "sky"}
+    >
+      <CardHeader>
+        <div>
+          <CardTitle>Deal agreement</CardTitle>
+          <CardDescription>
+            {available
+              ? "Structured source of truth for expense scope, recoups, and settlement order before show night."
+              : "Structured deal agreements are limited to in-app settleable deals today."}
+          </CardDescription>
+        </div>
+        {!available ? (
+          <PlainBadge variant="amber">Coming soon</PlainBadge>
+        ) : status ? (
+          <PlainBadge variant={AGREEMENT_STATUS_VARIANTS[status]}>
+            {AGREEMENT_STATUS_LABELS[status]}
+          </PlainBadge>
+        ) : (
+          <PlainBadge variant="amber">Not structured</PlainBadge>
+        )}
+      </CardHeader>
+      <CardContent>
+        {!available ? (
+          <div className="text-[13px] text-ink-600 leading-relaxed">
+            Deal agreements and in-app settlement for deals with walk-out pots,
+            tier ratchets, and vs-% of gross are coming soon!
+          </div>
+        ) : agreement ? (
+          <div className="grid grid-cols-1 lg:grid-cols-[1fr_1.2fr_auto] gap-5 items-start">
+            <div>
+              <div className="flex items-center gap-2 text-[13px] font-medium text-ink-900">
+                <FileCheck2 className="h-4 w-4 text-brand-700" />
+                Version {agreement.agreement.version}
+                {agreement.agreement.lockedAt && (
+                  <span className="text-[11.5px] font-normal text-ink-400">
+                    locked {agreement.agreement.lockedAt.toLocaleDateString()}
+                  </span>
+                )}
+              </div>
+              <p className="text-[12.5px] text-ink-600 mt-2 leading-relaxed">
+                {agreement.agreement.sourceSummary}
+              </p>
+              {agreement.agreement.readinessSummary && (
+                <p className="text-[12px] text-ink-400 mt-2 leading-relaxed">
+                  {agreement.agreement.readinessSummary}
+                </p>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="rounded-lg bg-canvas-soft ring-1 ring-ink-200/50 p-3">
+                <div className="eyebrow text-[10px] text-ink-500 mb-2">
+                  Calculation order
+                </div>
+                <ol className="space-y-1.5 text-[12.5px] text-ink-700 list-decimal list-inside">
+                  {agreement.calculationSteps.slice(0, 4).map((step) => (
+                    <li key={step.id}>{step.label}</li>
+                  ))}
+                </ol>
+              </div>
+              <div className="rounded-lg bg-canvas-soft ring-1 ring-ink-200/50 p-3">
+                <div className="eyebrow text-[10px] text-ink-500 mb-2">
+                  Expense scope
+                </div>
+                {keyExpenseTerms && keyExpenseTerms.length > 0 ? (
+                  <div className="flex flex-wrap gap-1.5">
+                    {keyExpenseTerms.slice(0, 6).map((term) => (
+                      <PlainBadge key={term.id} variant="default">
+                        {term.category}
+                      </PlainBadge>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-[12.5px] text-ink-400">
+                    No expense-cap categories on this deal.
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="lg:text-right">
+              {flags.length > 0 ? (
+                <div className="text-[12px] text-amber-800 bg-amber-50/70 ring-1 ring-amber-200/70 rounded-lg p-3 leading-relaxed mb-3 lg:max-w-[260px]">
+                  {flags[0]}
+                  {flags.length > 1 && (
+                    <span className="text-amber-700">
+                      {" "}
+                      +{flags.length - 1} more
+                    </span>
+                  )}
+                </div>
+              ) : (
+                <div className="text-[12px] text-brand-800 bg-brand-50/70 ring-1 ring-brand-200/70 rounded-lg p-3 leading-relaxed mb-3 lg:max-w-[260px]">
+                  Ready to drive the settlement worksheet.
+                </div>
+              )}
+              <Link href={`/shows/${showId}/deal`}>
+                <Button variant="secondary" size="sm">
+                  Review deal agreement
+                </Button>
+              </Link>
+            </div>
+          </div>
+        ) : (
+          <div className="flex items-center justify-between gap-4">
+            <div className="text-[13px] text-ink-500 leading-relaxed">
+              This show still only has the old email-derived deal fields. Add a
+              structured agreement before settlement to avoid surprise disputes.
+            </div>
+            <Link href={`/shows/${showId}/deal`}>
+              <Button variant="secondary" size="sm">
+                Review deal agreement
+              </Button>
+            </Link>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 

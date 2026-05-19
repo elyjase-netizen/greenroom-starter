@@ -128,6 +128,143 @@ export const deals = sqliteTable("deals", {
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
 });
 
+// -------- Deal agreements --------
+
+/**
+ * Structured version of the deal memo. Email can still be the intake channel,
+ * but this is the agreement-shaped source the settlement workflow can trust.
+ */
+export const dealAgreements = sqliteTable("deal_agreements", {
+  id: text("id").primaryKey(),
+  dealId: text("deal_id")
+    .notNull()
+    .references(() => deals.id),
+  version: integer("version").notNull(),
+  status: text("status", {
+    enum: [
+      "draft",
+      "needs_clarification",
+      "ready_for_agent_review",
+      "agreed",
+      "changed_after_agreement",
+    ],
+  }).notNull(),
+  sourceSummary: text("source_summary"),
+  readinessSummary: text("readiness_summary"),
+  createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+  lockedAt: integer("locked_at", { mode: "timestamp" }),
+  venueApprovedAt: integer("venue_approved_at", { mode: "timestamp" }),
+  agentApprovedAt: integer("agent_approved_at", { mode: "timestamp" }),
+});
+
+export const dealCalculationSteps = sqliteTable("deal_calculation_steps", {
+  id: text("id").primaryKey(),
+  agreementId: text("agreement_id")
+    .notNull()
+    .references(() => dealAgreements.id),
+  position: integer("position").notNull(),
+  stepType: text("step_type", {
+    enum: [
+      "gross_box_office",
+      "ticketing_fees",
+      "recoup",
+      "expense_cap",
+      "net_after_expenses",
+      "artist_percentage",
+      "guarantee_compare",
+      "bonus",
+      "manual_review",
+    ],
+  }).notNull(),
+  label: text("label").notNull(),
+  configJson: text("config_json"),
+});
+
+export const dealExpenseTerms = sqliteTable("deal_expense_terms", {
+  id: text("id").primaryKey(),
+  agreementId: text("agreement_id")
+    .notNull()
+    .references(() => dealAgreements.id),
+  category: text("category", {
+    enum: [
+      "production",
+      "sound",
+      "lights",
+      "hospitality",
+      "marketing",
+      "backline",
+      "security",
+      "other",
+    ],
+  }).notNull(),
+  treatment: text("treatment", {
+    enum: [
+      "included_in_cap",
+      "outside_cap",
+      "venue_absorbed",
+      "reference_only",
+      "excluded",
+    ],
+  }).notNull(),
+  capAmount: real("cap_amount"),
+  notes: text("notes"),
+});
+
+export const dealRecoupTerms = sqliteTable("deal_recoup_terms", {
+  id: text("id").primaryKey(),
+  agreementId: text("agreement_id")
+    .notNull()
+    .references(() => dealAgreements.id),
+  label: text("label").notNull(),
+  amount: real("amount"),
+  category: text("category", {
+    enum: [
+      "marketing",
+      "hospitality_overage",
+      "production_overage",
+      "prior_advance",
+      "damages",
+      "other",
+    ],
+  }).notNull(),
+  placement: text("placement", {
+    enum: [
+      "inside_expense_cap",
+      "outside_expense_cap",
+      "before_artist_percentage",
+      "after_artist_percentage",
+      "reference_only",
+      "unclear",
+    ],
+  }).notNull(),
+  source: text("source"),
+  requiresApproval: integer("requires_approval", { mode: "boolean" })
+    .notNull()
+    .default(false),
+});
+
+export const dealAgreementEvents = sqliteTable("deal_agreement_events", {
+  id: text("id").primaryKey(),
+  agreementId: text("agreement_id")
+    .notNull()
+    .references(() => dealAgreements.id),
+  actor: text("actor").notNull(),
+  eventType: text("event_type", {
+    enum: [
+      "draft_created",
+      "clarification_requested",
+      "venue_reviewed",
+      "agent_reviewed",
+      "locked",
+      "changed",
+      "note_added",
+    ],
+  }).notNull(),
+  summary: text("summary").notNull(),
+  createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+});
+
 // -------- Ticket sales --------
 
 export const ticketSales = sqliteTable("ticket_sales", {
@@ -290,6 +427,11 @@ export type Agent = typeof agents.$inferSelect;
 export type Artist = typeof artists.$inferSelect;
 export type Show = typeof shows.$inferSelect;
 export type Deal = typeof deals.$inferSelect;
+export type DealAgreement = typeof dealAgreements.$inferSelect;
+export type DealCalculationStep = typeof dealCalculationSteps.$inferSelect;
+export type DealExpenseTerm = typeof dealExpenseTerms.$inferSelect;
+export type DealRecoupTerm = typeof dealRecoupTerms.$inferSelect;
+export type DealAgreementEvent = typeof dealAgreementEvents.$inferSelect;
 export type TicketSale = typeof ticketSales.$inferSelect;
 export type Comp = typeof comps.$inferSelect;
 export type Expense = typeof expenses.$inferSelect;

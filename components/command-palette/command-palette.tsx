@@ -48,14 +48,15 @@ export function CommandPalette({ shows, artists }: Props) {
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  // Focus input when opened, reset state
+  // Focus input when opened, reset state (async to avoid sync setState-in-effect)
   useEffect(() => {
-    if (open) {
+    if (!open) return;
+    const id = requestAnimationFrame(() => {
       setQuery("");
       setActiveIndex(0);
-      // Small delay so the element is mounted before focusing
-      requestAnimationFrame(() => inputRef.current?.focus());
-    }
+      inputRef.current?.focus();
+    });
+    return () => cancelAnimationFrame(id);
   }, [open]);
 
   // Filter results
@@ -76,9 +77,9 @@ export function CommandPalette({ shows, artists }: Props) {
     return [...matchedShows, ...matchedArtists];
   }, [query, shows, artists]);
 
-  // Reset active index when results change
   useEffect(() => {
-    setActiveIndex(0);
+    const id = requestAnimationFrame(() => setActiveIndex(0));
+    return () => cancelAnimationFrame(id);
   }, [results]);
 
   // Navigate to a result

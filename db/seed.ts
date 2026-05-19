@@ -30,6 +30,11 @@ import {
   artists,
   shows,
   deals,
+  dealAgreements,
+  dealCalculationSteps,
+  dealExpenseTerms,
+  dealRecoupTerms,
+  dealAgreementEvents,
   ticketSales,
   comps,
   expenses,
@@ -220,6 +225,358 @@ interface GeneratedDeal {
   // missing — a deliberate part of the seam.
   bonusesAlsoInProse: boolean;
   notes: string;
+}
+
+const AGREEMENT_EXPENSE_CATEGORIES = [
+  "sound",
+  "lights",
+  "production",
+  "marketing",
+  "hospitality",
+  "backline",
+] as const;
+
+type DealInsert = typeof deals.$inferInsert;
+type AgreementInsert = typeof dealAgreements.$inferInsert;
+type AgreementStepInsert = typeof dealCalculationSteps.$inferInsert;
+type AgreementExpenseInsert = typeof dealExpenseTerms.$inferInsert;
+type AgreementRecoupInsert = typeof dealRecoupTerms.$inferInsert;
+type AgreementEventInsert = typeof dealAgreementEvents.$inferInsert;
+
+function agreementStatusForDeal(
+  deal: DealInsert,
+): AgreementInsert["status"] {
+  if (deal.showId === "show_coastal_spell_dispute") {
+    return "needs_clarification";
+  }
+  if (deal.dealNotesFreetext?.includes("structured field still reflects")) {
+    return "changed_after_agreement";
+  }
+  if (
+    deal.dealType === "percentage_of_net" ||
+    deal.dealType === "door" ||
+    ((deal.dealType === "vs" ||
+      deal.dealType === "percentage_of_gross") &&
+      deal.percentageBasis == null)
+  ) {
+    return "ready_for_agent_review";
+  }
+  return "agreed";
+}
+
+function agreementReviewReasonForDeal(deal: DealInsert): string {
+  if (deal.dealType === "percentage_of_net") {
+    return "Percentage-of-net deals still need manual review because the app does not yet settle that deal type.";
+  }
+  if (deal.dealType === "door") {
+    return "Door deals still need manual review because the app does not yet settle that deal type.";
+  }
+  if (
+    (deal.dealType === "vs" ||
+      deal.dealType === "percentage_of_gross") &&
+    deal.percentageBasis == null
+  ) {
+    return "The artist percentage is missing its basis, so the agreement needs agent confirmation before settlement.";
+  }
+  return "Structured draft exists, but a term needs agent confirmation before settlement.";
+}
+
+function agreementSummaryForDeal(
+  deal: DealInsert,
+  status: AgreementInsert["status"],
+): string {
+  if (deal.showId === "show_coastal_spell_dispute") {
+    return "Original WME email captured a marketing recoup but did not specify whether it sits inside or outside the expense cap.";
+  }
+  if (status === "changed_after_agreement") {
+    return "Phone update changed a bonus threshold after the structured deal was first entered.";
+  }
+  if (status === "ready_for_agent_review") {
+    return agreementReviewReasonForDeal(deal);
+  }
+  return "Deal email translated into structured terms and ready to drive settlement.";
+}
+
+function agreementStepsForDeal(
+  agreementId: string,
+  deal: DealInsert,
+): AgreementStepInsert[] {
+  const steps: Omit<AgreementStepInsert, "id" | "agreementId" | "position">[] =
+    deal.dealType === "flat"
+      ? [
+          {
+            stepType: "guarantee_compare",
+            label: "Pay flat guarantee",
+            configJson: deal.guaranteeAmount
+              ? JSON.stringify({ guaranteeAmount: deal.guaranteeAmount })
+              : null,
+          },
+        ]
+      : [
+          {
+            stepType: "gross_box_office",
+            label: "Start with gross box office",
+            configJson: null,
+          },
+          {
+            stepType: "ticketing_fees",
+            label: "Less ticketing and platform fees",
+            configJson: null,
+          },
+        ];
+
+  if (deal.dealNotesFreetext?.toLowerCase().includes("marketing recoup")) {
+    steps.push({
+      stepType: "recoup",
+      label: "Apply marketing recoup per agreed placement",
+      configJson: JSON.stringify({ requiresExplicitPlacement: true }),
+    });
+  }
+  if (deal.expenseCap != null) {
+    steps.push({
+      stepType: "expense_cap",
+      label: `Apply expense cap up to $${deal.expenseCap.toLocaleString()}`,
+      configJson: JSON.stringify({ capAmount: deal.expenseCap }),
+    });
+  }
+  if (deal.dealType === "vs" || deal.dealType === "percentage_of_net") {
+    steps.push(
+      {
+        stepType: "net_after_expenses",
+        label: "Calculate net after agreed deductions",
+        configJson: null,
+      },
+      {
+        stepType: "artist_percentage",
+        label:
+          deal.percentage != null
+            ? `Apply ${(deal.percentage * 100).toFixed(0)}% artist share`
+            : "Apply artist percentage",
+        configJson: deal.percentage
+          ? JSON.stringify({ percentage: deal.percentage })
+          : null,
+      },
+    );
+  } else if (deal.dealType === "percentage_of_gross") {
+    steps.push({
+      stepType: "artist_percentage",
+      label:
+        deal.percentage != null
+          ? `Apply ${(deal.percentage * 100).toFixed(0)}% of gross`
+          : "Apply artist percentage",
+      configJson: deal.percentage
+        ? JSON.stringify({ percentage: deal.percentage, basis: "gross" })
+        : null,
+    });
+  }
+  if (deal.dealType === "vs") {
+    steps.push({
+      stepType: "guarantee_compare",
+      label: "Pay greater of guarantee or percentage share",
+      configJson: deal.guaranteeAmount
+        ? JSON.stringify({ guaranteeAmount: deal.guaranteeAmount })
+        : null,
+    });
+  }
+  if (deal.bonusesJson) {
+    steps.push({
+      stepType: "bonus",
+      label: "Apply structured bonuses that trigger",
+      configJson: deal.bonusesJson,
+    });
+  }
+  if (deal.dealType === "door" || deal.dealType === "percentage_of_net") {
+    steps.push({
+      stepType: "manual_review",
+      label: "Manual review required before in-app settlement",
+      configJson: JSON.stringify({ reason: "Engine support pending" }),
+    });
+  }
+
+  return steps.map((step, idx) => ({
+    id: `${agreementId}_step_${idx}`,
+    agreementId,
+    position: idx + 1,
+    ...step,
+  }));
+}
+
+function agreementExpenseTermsForDeal(
+  agreementId: string,
+  deal: DealInsert,
+): AgreementExpenseInsert[] {
+  if (deal.expenseCap == null) return [];
+  return AGREEMENT_EXPENSE_CATEGORIES.map((category, idx) => ({
+    id: `${agreementId}_expense_${category}`,
+    agreementId,
+    category,
+    treatment:
+      category === "marketing" && deal.showId === "show_coastal_spell_dispute"
+        ? "reference_only"
+        : "included_in_cap",
+    capAmount: category === "hospitality" ? deal.hospitalityCap : null,
+    notes:
+      category === "marketing" && deal.showId === "show_coastal_spell_dispute"
+        ? "Deal email did not make clear whether marketing recoup was inside the cap."
+        : idx === 0
+          ? "Included in the expense cap unless specifically marked otherwise."
+          : null,
+  }));
+}
+
+function agreementRecoupTermsForDeal(
+  agreementId: string,
+  deal: DealInsert,
+): AgreementRecoupInsert[] {
+  if (!deal.dealNotesFreetext?.toLowerCase().includes("marketing recoup")) {
+    return [];
+  }
+
+  const amountMatch = deal.dealNotesFreetext.match(
+    /marketing recoup(?: of)? \$(\d[\d,]*)/i,
+  );
+  const amount = amountMatch
+    ? Number(amountMatch[1].replaceAll(",", ""))
+    : null;
+  const coastal = deal.showId === "show_coastal_spell_dispute";
+
+  return [
+    {
+      id: `${agreementId}_recoup_marketing`,
+      agreementId,
+      label: coastal ? "Marketing recoup - placement disputed" : "Marketing recoup",
+      amount,
+      category: "marketing",
+      placement: coastal ? "unclear" : "inside_expense_cap",
+      source: coastal
+        ? "Andrea/WME December deal email"
+        : "Deal email, translated during advance",
+      requiresApproval: true,
+    },
+  ];
+}
+
+function agreementEventsForDeal(
+  agreementId: string,
+  deal: DealInsert,
+  status: AgreementInsert["status"],
+  showDate: Date,
+): AgreementEventInsert[] {
+  const events: AgreementEventInsert[] = [
+    {
+      id: `${agreementId}_event_0`,
+      agreementId,
+      actor: "Mariana Reyes",
+      eventType: "draft_created",
+      summary: "Structured deal agreement drafted from the deal email.",
+      createdAt: new Date(showDate.getTime() - 1000 * 60 * 60 * 24 * 21),
+    },
+  ];
+
+  if (status === "needs_clarification") {
+    events.push({
+      id: `${agreementId}_event_1`,
+      agreementId,
+      actor: "Mariana Reyes",
+      eventType: "clarification_requested",
+      summary:
+        "Asked WME to confirm whether marketing recoup is inside the $2,500 expense cap.",
+      createdAt: new Date(showDate.getTime() - 1000 * 60 * 60 * 24 * 3),
+    });
+  } else if (status === "changed_after_agreement") {
+    events.push({
+      id: `${agreementId}_event_1`,
+      agreementId,
+      actor: "Mariana Reyes",
+      eventType: "changed",
+      summary:
+        "Bonus threshold changed by phone; structured fields still need reconciliation.",
+      createdAt: new Date(showDate.getTime() - 1000 * 60 * 60 * 24 * 4),
+    });
+  } else {
+    events.push(
+      {
+        id: `${agreementId}_event_1`,
+        agreementId,
+        actor: "Marcus Holland",
+        eventType: "venue_reviewed",
+        summary: "Venue confirmed calculation order and expense scope.",
+        createdAt: new Date(showDate.getTime() - 1000 * 60 * 60 * 24 * 14),
+      },
+      {
+        id: `${agreementId}_event_2`,
+        agreementId,
+        actor: "Agent team",
+        eventType:
+          status === "agreed" ? "agent_reviewed" : "clarification_requested",
+        summary:
+          status === "agreed"
+            ? "Agent team accepted the structured deal memo."
+            : "Agent team has not yet accepted all structured terms.",
+        createdAt: new Date(showDate.getTime() - 1000 * 60 * 60 * 24 * 10),
+      },
+    );
+  }
+
+  if (status === "agreed") {
+    events.push({
+      id: `${agreementId}_event_3`,
+      agreementId,
+      actor: "Greenroom",
+      eventType: "locked",
+      summary: "Agreement locked as the settlement source of truth.",
+      createdAt: new Date(showDate.getTime() - 1000 * 60 * 60 * 24 * 9),
+    });
+  }
+
+  return events;
+}
+
+function buildAgreementRows(
+  deal: DealInsert,
+  showDate: Date,
+): {
+  agreement: AgreementInsert;
+  steps: AgreementStepInsert[];
+  expenses: AgreementExpenseInsert[];
+  recoups: AgreementRecoupInsert[];
+  events: AgreementEventInsert[];
+} {
+  const id = `agr_${deal.showId}_v1`;
+  const status = agreementStatusForDeal(deal);
+  const createdAt = new Date(showDate.getTime() - 1000 * 60 * 60 * 24 * 21);
+  const updatedAt = new Date(showDate.getTime() - 1000 * 60 * 60 * 24 * 3);
+  return {
+    agreement: {
+      id,
+      dealId: deal.id!,
+      version: 1,
+      status,
+      sourceSummary: agreementSummaryForDeal(deal, status),
+      readinessSummary:
+        status === "agreed"
+          ? "Ready for settlement. Calculation order and expense scope are agreed."
+          : "Review required before this should drive settlement without a human check.",
+      createdAt,
+      updatedAt,
+      lockedAt:
+        status === "agreed"
+          ? new Date(showDate.getTime() - 1000 * 60 * 60 * 24 * 9)
+          : null,
+      venueApprovedAt:
+        status === "agreed"
+          ? new Date(showDate.getTime() - 1000 * 60 * 60 * 24 * 14)
+          : null,
+      agentApprovedAt:
+        status === "agreed"
+          ? new Date(showDate.getTime() - 1000 * 60 * 60 * 24 * 10)
+          : null,
+    },
+    steps: agreementStepsForDeal(id, deal),
+    expenses: agreementExpenseTermsForDeal(id, deal),
+    recoups: agreementRecoupTermsForDeal(id, deal),
+    events: agreementEventsForDeal(id, deal, status, showDate),
+  };
 }
 
 function generateBonuses(tier: ArtistDef["tier"], baseGuarantee: number): Bonus[] | null {
@@ -852,6 +1209,11 @@ function dateOffset(days: number): string {
 async function main() {
   console.log("🌱 Seeding 18-month Greenroom dataset…");
 
+  await db.delete(dealAgreementEvents);
+  await db.delete(dealRecoupTerms);
+  await db.delete(dealExpenseTerms);
+  await db.delete(dealCalculationSteps);
+  await db.delete(dealAgreements);
   await db.delete(settlements);
   await db.delete(expenses);
   await db.delete(comps);
@@ -892,6 +1254,14 @@ async function main() {
   const compsToInsert: (typeof comps.$inferInsert)[] = [];
   const expensesToInsert: (typeof expenses.$inferInsert)[] = [];
   const settlementsToInsert: (typeof settlements.$inferInsert)[] = [];
+  const agreementsToInsert: (typeof dealAgreements.$inferInsert)[] = [];
+  const agreementStepsToInsert: (typeof dealCalculationSteps.$inferInsert)[] =
+    [];
+  const agreementExpensesToInsert: (typeof dealExpenseTerms.$inferInsert)[] =
+    [];
+  const agreementRecoupsToInsert: (typeof dealRecoupTerms.$inferInsert)[] = [];
+  const agreementEventsToInsert: (typeof dealAgreementEvents.$inferInsert)[] =
+    [];
 
   // Track post-insert mutations for breadcrumbs that need to update artist
   // rows (already inserted earlier in main()).
@@ -1062,13 +1432,8 @@ async function main() {
     (s) => s.status !== "draft" && s.status !== "voided",
   );
   // Helpers
-  const findShow = (id: string) => showsToInsert.find((s) => s.id === id);
-  const findDeal = (showId: string) =>
-    dealsToInsert.find((d) => d.showId === showId);
   const findSettlement = (showId: string) =>
     settlementsToInsert.find((s) => s.showId === showId);
-  const findComps = (showId: string) =>
-    compsToInsert.filter((c) => c.showId === showId);
   const findExpenses = (showId: string) =>
     expensesToInsert.filter((e) => e.showId === showId);
 
@@ -1428,6 +1793,22 @@ async function main() {
       "Disputed by WME (Daniel Hwang) on 3/18 over the $900 marketing recoup. Marcus authorized additional $720 to resolve, but the formal revision hasn't been pushed back into the system yet. Final agreed: $12,285 (vs originally calculated $11,565). See email thread for context. Going forward: deal emails must specify marketing recoup as inside or outside expense cap.",
   });
 
+  // -------- Build structured deal-agreement read models --------
+  const showDates = new Map(
+    showsToInsert.map((s) => [s.id, new Date(s.date as string)]),
+  );
+  for (const deal of dealsToInsert) {
+    const agreementRows = buildAgreementRows(
+      deal,
+      showDates.get(deal.showId) ?? new Date(deal.createdAt),
+    );
+    agreementsToInsert.push(agreementRows.agreement);
+    agreementStepsToInsert.push(...agreementRows.steps);
+    agreementExpensesToInsert.push(...agreementRows.expenses);
+    agreementRecoupsToInsert.push(...agreementRows.recoups);
+    agreementEventsToInsert.push(...agreementRows.events);
+  }
+
   // Bulk insert
   console.log(`   Inserting ${showsToInsert.length} shows…`);
   const chunkArr = <T>(arr: T[], size: number): T[][] =>
@@ -1439,6 +1820,11 @@ async function main() {
   for (const c of chunkArr(compsToInsert, 50)) await db.insert(comps).values(c);
   for (const c of chunkArr(expensesToInsert, 50)) await db.insert(expenses).values(c);
   for (const c of chunkArr(settlementsToInsert, 50)) await db.insert(settlements).values(c);
+  for (const c of chunkArr(agreementsToInsert, 50)) await db.insert(dealAgreements).values(c);
+  for (const c of chunkArr(agreementStepsToInsert, 50)) await db.insert(dealCalculationSteps).values(c);
+  for (const c of chunkArr(agreementExpensesToInsert, 50)) await db.insert(dealExpenseTerms).values(c);
+  for (const c of chunkArr(agreementRecoupsToInsert, 50)) await db.insert(dealRecoupTerms).values(c);
+  for (const c of chunkArr(agreementEventsToInsert, 50)) await db.insert(dealAgreementEvents).values(c);
 
   // BC11 finalization: artist's priorShowCount left stale despite many shows
   for (const bc of breadcrumbsToFinalize) {
@@ -1466,6 +1852,7 @@ async function main() {
   console.log(`   ${ticketSalesToInsert.length} ticket sale records`);
   console.log(`   ${compsToInsert.length} comp records (${compsToInsert.reduce((s, c) => s + (c.count ?? 0), 0)} comp tickets total)`);
   console.log(`   ${expensesToInsert.length} expenses`);
+  console.log(`   ${agreementsToInsert.length} deal agreements`);
   console.log(`   ${settlementsToInsert.length} settlements (${Object.entries(stageCounts).map(([k, v]) => `${k}:${v}`).join(", ")})`);
   console.log(`   ${recoupCount} settlements have recoup line items`);
   console.log(`   ${bonusCount} deals have structured bonuses`);

@@ -115,7 +115,7 @@ A few things worth knowing:
 
 **The deal `notes_freetext` field is the truth.** The structured fields (`guarantee_amount`, `percentage`, `bonuses_json`, `expense_cap`) are filled inconsistently. Mariana enters deals as prose because the structured fields don't model the actual deals well. This mismatch is part of the realism.
 
-**Vs deals come in flavors.** About a third of Vs deals are "standard." The rest mix in walkout pots, tier ratchets, and vs-gross variants. The current in-app tool can't settle most of these.
+**Vs deals come in flavors.** About a third of Vs deals are "standard." The in-app settlement engine handles **standard vs** only (`percentage_basis = net`, no tier ratchet, no structured walkout-pot bonus). Walkout pots, tier ratchets, and vs-% of gross remain unsupported.
 
 **Settlements have a lifecycle.** The state machine runs draft → submitted → in_review → signed (or disputed) → revised → finalized → paid → voided.
 

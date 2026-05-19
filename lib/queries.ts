@@ -3,6 +3,7 @@
  */
 
 import { db } from "@/db";
+import { isDealSupportedForInAppSettlement } from "@/lib/dealMath";
 import {
   shows,
   artists,
@@ -13,6 +14,11 @@ import {
   comps,
   expenses,
   settlements,
+  dealAgreements,
+  dealCalculationSteps,
+  dealExpenseTerms,
+  dealRecoupTerms,
+  dealAgreementEvents,
   venues,
   type Recoup,
 } from "@/db/schema";
@@ -79,6 +85,58 @@ export async function getShowById(id: string) {
     db.select().from(comps).where(eq(comps.showId, id)),
   ]);
 
+  let agreement:
+    | {
+        agreement: typeof dealAgreements.$inferSelect;
+        calculationSteps: (typeof dealCalculationSteps.$inferSelect)[];
+        expenseTerms: (typeof dealExpenseTerms.$inferSelect)[];
+        recoupTerms: (typeof dealRecoupTerms.$inferSelect)[];
+        events: (typeof dealAgreementEvents.$inferSelect)[];
+      }
+    | null = null;
+
+  if (row.deal) {
+    const agreementRows = await db
+      .select()
+      .from(dealAgreements)
+      .where(eq(dealAgreements.dealId, row.deal.id))
+      .orderBy(desc(dealAgreements.version));
+
+    const latest = agreementRows[0];
+    if (latest) {
+      const [calculationSteps, expenseTerms, recoupTerms, events] =
+        await Promise.all([
+          db
+            .select()
+            .from(dealCalculationSteps)
+            .where(eq(dealCalculationSteps.agreementId, latest.id))
+            .orderBy(asc(dealCalculationSteps.position)),
+          db
+            .select()
+            .from(dealExpenseTerms)
+            .where(eq(dealExpenseTerms.agreementId, latest.id))
+            .orderBy(asc(dealExpenseTerms.category)),
+          db
+            .select()
+            .from(dealRecoupTerms)
+            .where(eq(dealRecoupTerms.agreementId, latest.id)),
+          db
+            .select()
+            .from(dealAgreementEvents)
+            .where(eq(dealAgreementEvents.agreementId, latest.id))
+            .orderBy(asc(dealAgreementEvents.createdAt)),
+        ]);
+
+      agreement = {
+        agreement: latest,
+        calculationSteps,
+        expenseTerms,
+        recoupTerms,
+        events,
+      };
+    }
+  }
+
   let recoups: Recoup[] = [];
   if (row.settlement?.recoupsJson) {
     try {
@@ -94,6 +152,7 @@ export async function getShowById(id: string) {
     ticketSales: showTicketSales,
     expenses: showExpenses,
     comps: showComps,
+    agreement,
     recoups,
   };
 }
@@ -146,9 +205,8 @@ export async function getReports() {
   }
 
   const totalDeals = pastDeals.length;
-  const supportedTypes = ["flat", "percentage_of_gross"];
   const supportedCount = pastDeals.filter((d) =>
-    supportedTypes.includes(d.dealType),
+    isDealSupportedForInAppSettlement(d),
   ).length;
   const inAppToolUsageRate = totalDeals > 0 ? supportedCount / totalDeals : 0;
 
